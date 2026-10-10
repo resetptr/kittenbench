@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>KittenBench · Run Viewer</title>
+<!--
+  KittenBench run viewer. Shows everything about one LLM run: the summary, every step (what the agent was told,
+  what it reasoned, what it did), its notes, and the exact context sent to the model on each step.
+
+  How to use:
+    1. Open this file in a browser (double-click; file:// is fine, no server needed).
+    2. Click "Open run folder" and pick a folder of runs, e.g. results/gpt-6-sol.
+    3. Choose a run from the dropdown.
+  Or click "Open files" and select a run's files together (<tag>.agent.jsonl and <tag>.result.json).
+
+  Keys: up/down or j/k move between steps.
+-->
+<style>
+  :root {
+    --bg: #0a0c14; --panel: #1a2744; --panel-inner: #162038; --line: #2a3d62;
+    --border: #e8d48b; --border-dark: #8a7340;
+    --text: #f4f0e0; --muted: #9aa8c4;
+    --you: #5b9bd5; --agent: #c9a0e8; --world: #f7d060; --sys: #a0d8a0; --err: #ef7a7a; --tool: #e8a87c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Courier New", Courier, ui-monospace, monospace; font-size: 14px; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 10px 14px; border-bottom: 2px solid var(--border-dark); display: flex; flex-wrap: wrap;
+    gap: 8px; align-items: center; background: #0f1728; }
+  header h1 { font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--world); margin: 0 12px 0 0; }
+  button, label.btn, select, input[type=search] { background: var(--panel); color: var(--text); border: 2px solid var(--border-dark);
+    border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
+  button:hover, label.btn:hover { border-color: var(--border); }
+  input[type=file] { display: none; }
+  input[type=search] { cursor: text; min-width: 180px; }
+  #summary { padding: 8px 14px; color: var(--muted); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  #summary b { color: var(--text); font-weight: normal; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #left { width: 380px; min-width: 260px; border-right: 2px solid var(--border-dark); display: flex; flex-direction: column; }
+  #filters { padding: 8px; display: flex; gap: 6px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  #steps { flex: 1; overflow-y: auto; }
+  .step { padding: 5px 8px; border-bottom: 1px solid #1b2742; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  .step:hover { background: #18233d; }
+  .step.sel { background: #24365c; outline: 1px solid var(--border); }
+  .step .n { color: var(--muted); min-width: 34px; text-align: right; }
+  .step .t { color: var(--muted); min-width: 92px; }
+  .step .c { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--you); }
+  .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; border: 1px solid; white-space: nowrap; }
+  .b-err { color: var(--err); border-color: var(--err); }
+  .b-parsed { color: var(--sys); border-color: var(--sys); }
+  .b-nocall { color: var(--err); border-color: var(--err); }
+  .b-note { color: var(--agent); border-color: var(--agent); }
+  .b-wait { color: var(--muted); border-color: var(--muted); }
+  #right { flex: 1; overflow-y: auto; padding: 14px 18px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button.on { border-color: var(--border); color: var(--world); }
+  section { margin-bottom: 14px; border: 2px solid var(--line); border-radius: 8px; background: var(--panel-inner); }
+  section h2 { margin: 0; padding: 6px 10px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    border-bottom: 1px solid var(--line); }
+  section pre { margin: 0; padding: 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+  .h-reason { color: var(--agent); } .h-call { color: var(--you); } .h-obs { color: var(--world); }
+  .h-ctx { color: var(--sys); } .h-said { color: var(--agent); } .h-sys { color: var(--sys); }
+  .muted { color: var(--muted); }
+  details.msg { border-top: 1px solid var(--line); }
+  details.msg summary { padding: 5px 10px; cursor: pointer; color: var(--muted); }
+  details.msg summary .role { display: inline-block; min-width: 92px; font-weight: bold; }
+  .r-system { color: var(--sys); } .r-user { color: var(--world); } .r-assistant { color: var(--agent); } .r-tool { color: var(--tool); }
+  details.msg pre { border-top: 1px dashed var(--line); }
+  .empty { padding: 30px; color: var(--muted); line-height: 1.6; }
+  .note { border-bottom: 1px solid var(--line); padding: 10px; }
+  .note .meta { color: var(--muted); margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KittenBench · Run Viewer</h1>
+  <label class="btn" for="dir">Open run folder</label>
+  <input id="dir" type="file" webkitdirectory multiple />
+  <label class="btn" for="files">Open files</label>
+  <input id="files" type="file" multiple accept=".jsonl,.json" />
+  <select id="runSelect" hidden></select>
+</header>
+<div id="summary"><span class="muted">No run loaded.</span></div>
+<main>
+  <div id="left">
+    <div id="filters">
+      <input type="search" id="search" placeholder="search steps…" />
+      <select id="filter">
+        <option value="all">all steps</option>
+        <option value="problems">errors / no call / parsed</option>
+        <option value="notes">notes</option>
+        <option value="time">wait / sleep</option>
+      </select>
+    </div>
+    <div id="steps"></div>
+  </div>
+  <div id="right">
+    <div class="empty">
+      Open a run: click <b>Open run folder</b> and choose a folder of runs (for example
+      <code>results/gpt-6-sol</code>), then pick a run from the dropdown.<br/><br/>
+      Each step shows the model's reasoning, what it said, the action it took, what it saw, and the exact
+      context it was sent. The <b>Notes</b> tab shows every note it wrote and when it read them.
+    </div>
+  </div>
+</main>
+
+<script>
+// ── state ─────────────────────────────────────────────────────────────────
+const state = {
+  runs: {},          // tag -> {agent: File, context: File, result: File}
+  rows: [],          // agent.jsonl rows (step 0 = opening observation)
+  contexts: null,    // step -> messages (from context.jsonl), or null if the run has none
+  result: null,      // result.json
+  tag: "",
+  selected: 1,
+  tab: "step",       // "step" | "notes"
+};
+const $ = id => document.getElementById(id);
+
+// ── loading files ─────────────────────────────────────────────────────────
+function groupFiles(fileList) {
+  const runs = {};
+  for (const f of fileList) {
+    const m = f.name.match(/^(.*)\.(agent\.jsonl|context\.jsonl|result\.json|trace\.jsonl)$/);
+    if (!m) continue;
+    const [, tag, kind] = m;
+    runs[tag] = runs[tag] || {};
+    runs[tag][kind.split(".")[0]] = f;
+  }
+  for (const tag of Object.keys(runs)) if (!runs[tag].agent) delete runs[tag];
+  return runs;
+}
+
+function showRunPicker(runs) {
+  state.runs = runs;
+  const sel = $("runSelect");
+  const tags = Object.keys(runs).sort();
+  sel.innerHTML = tags.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  sel.hidden = tags.length === 0;
+  if (tags.length) loadRun(tags[0]);
+  else $("summary").innerHTML = `<span class="muted">No <code>*.agent.jsonl</code> files found there.</span>`;
+}
+
+async function loadRun(tag) {
+  const files = state.runs[tag];
+  state.tag = tag;
+  state.rows = parseJsonl(await files.agent.text()).map(normalize);
+  state.result = files.result ? JSON.parse(await files.result.text()) : null;
+  // Each step's exact context is stored in its row; older runs kept it in a separate .context.jsonl file.
+  state.contexts = null;
+  if (state.rows.some(r => r.context)) {
+    state.contexts = {};
+    for (const r of state.rows) if (r.context) state.contexts[r.step] = r.context;
+  } else if (files.context) {
+    state.contexts = {};
+    for (const entry of parseJsonl(await files.context.text())) state.contexts[entry.step] = entry.messages;
+  }
+  state.selected = state.rows.length > 1 ? 1 : 0;
+  state.tab = "step";
+  renderSummary();
+  renderSteps();
+  renderRight();
+}
+
+// Older runs logged one action per step ({call, observation}); newer runs log a turn with a list of actions.
+function normalize(row) {
+  if (row.step > 0 && !row.actions) {
+    row.actions = row.call ? [{call: row.call, ran: true, recovered: row.recovered, observation: row.observation}] : [];
+  }
+  return row;
+}
+
+function parseJsonl(text) {
+  return text.split(/\r?\n/).filter(l => l.trim()).map(l => JSON.parse(l));
+}
+
+$("dir").addEventListener("change", e => showRunPicker(groupFiles(e.target.files)));
+$("files").addEventListener("change", e => showRunPicker(groupFiles(e.target.files)));
+$("runSelect").addEventListener("change", e => loadRun(e.target.value));
+$("search").addEventListener("input", renderSteps);
+$("filter").addEventListener("change", renderSteps);
+
+// ── helpers ───────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+}
+function fmtCall(call) {
+  if (!call) return "(no tool call)";
+  const args = Object.entries(call.arguments || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
+  return `${call.name}(${args.join(", ")})`;
+}
+function clockOf(row) {
+  // Observations start with "[Saturday 10:05 · day 0 · living room]"; use the turn's first one.
+  const first = (row.actions || [])[0]?.observation || row.observation || "";
+  const m = first.match(/^\[(\w+) (\d\d:\d\d) · day (\d+)/);
+  return m ? `${m[1].slice(0, 3)} ${m[2]}` : "";
+}
+const own = row => (row.actions || []).filter(a => !a.auto);          // actions the model chose
+const names = row => own(row).map(a => a.call.name);
+function actionError(a) {
+  const lines = (a.observation || "").split("\n");
+  return lines.length > 1 && lines[1].startsWith("Error:");
+}
+const isError = row => (row.actions || []).some(actionError);
+function badges(row) {
+  const out = [];
+  if (!own(row).length) out.push(`<span class="badge b-nocall">no call</span>`);
+  if (own(row).length > 1) out.push(`<span class="badge b-wait">${own(row).length} actions</span>`);
+  if (own(row).some(a => a.recovered)) out.push(`<span class="badge b-parsed">parsed</span>`);
+  if (own(row).some(a => !a.ran)) out.push(`<span class="badge b-err">skipped</span>`);
+  if (isError(row)) out.push(`<span class="badge b-err">error</span>`);
+  if (names(row).some(n => n === "write_note" || n === "read_notes")) out.push(`<span class="badge b-note">note</span>`);
+  return out.join(" ");
+}
+function matchesFilter(row) {
+  const f = $("filter").value, n = names(row);
+  if (f === "problems" && !(!n.length || own(row).some(a => a.recovered || !a.ran) || isError(row))) return false;
+  if (f === "notes" && !n.some(x => x === "write_note" || x === "read_notes")) return false;
+  if (f === "time" && !n.some(x => ["wait", "wait_until", "sleep"].includes(x))) return false;
+  const q = $("search").value.trim().toLowerCase();
+  if (q) {
+    const hay = [...own(row).map(a => fmtCall(a.call) + "\n" + a.observation), row.reasoning, row.text].join("\n").toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+// ── rendering ─────────────────────────────────────────────────────────────
+function renderSummary() {
+  const r = state.result, rows = state.rows;
+  const steps = rows.filter(x => x.step > 0);
+  const counted = n => steps.filter(n).length;
+  const bits = [`<span>run <b>${esc(state.tag)}</b></span>`];
+  if (r) {
+    bits.push(`<span>score <b>${r.kws}</b></span>`,
+              `<span>survived <b>${r.survived ? "yes" : "no — " + esc(r.cause_of_death)}</b></span>`,
+              `<span>cost <b>$${(r.usage?.cost ?? 0).toFixed(3)}</b></span>`,
+              `<span>prompt tokens <b>${(r.usage?.prompt_tokens ?? 0).toLocaleString()}</b></span>`,
+              `<span>nutrition <b>${r.nutrition}</b> hydration <b>${r.hydration}</b> hygiene <b>${r.hygiene}</b> welfare <b>${r.welfare}</b></span>`,
+              `<span>soiling <b>${r.soiling}</b> vet visits <b>${r.vet_visits}</b></span>`);
+  } else {
+    bits.push(`<span class="muted">(no result.json: run unfinished or not selected)</span>`);
+  }
+  bits.push(`<span>turns <b>${steps.length}</b></span>`,
+            `<span>actions <b>${steps.reduce((n, x) => n + own(x).length, 0)}</b></span>`,
+            `<span>turns with errors <b>${counted(isError)}</b> · no call <b>${counted(x => !own(x).length)}</b> · parsed from text <b>${counted(x => own(x).some(a => a.recovered))}</b></span>`,
+            `<span>notes written <b>${steps.reduce((n, x) => n + names(x).filter(y => y === "write_note").length, 0)}</b> · read <b>${steps.reduce((n, x) => n + names(x).filter(y => y === "read_notes").length, 0)}</b></span>`,
+            `<span>context saved <b>${state.contexts ? "yes" : "no (older run)"}</b></span>`);
+  $("summary").innerHTML = bits.join("");
+}
+
+function renderSteps() {
+  const list = state.rows.filter(r => r.step > 0 && matchesFilter(r));
+  $("steps").innerHTML = list.map(r => `
+    <div class="step ${r.step === state.selected ? "sel" : ""}" data-step="${r.step}">
+      <span class="n">${r.step}</span><span class="t">${esc(clockOf(r))}</span>
+      <span class="c">${esc(own(r).map(a => fmtCall(a.call)).join("; ") || "(no tool call)")}</span>${badges(r)}
+    </div>`).join("");
+  for (const el of document.querySelectorAll(".step")) {
+    el.addEventListener("click", () => select(Number(el.dataset.step)));
+  }
+}
+
+function select(step) {
+  state.selected = step;
+  state.tab = "step";
+  for (const el of document.querySelectorAll(".step")) el.classList.toggle("sel", Number(el.dataset.step) === step);
+  document.querySelector(".step.sel")?.scrollIntoView({block: "nearest"});
+  renderRight();
+}
+
+function tabs() {
+  return `<div class="tabs">
+    <button class="${state.tab === "step" ? "on" : ""}" onclick="state.tab='step';renderRight()">Step</button>
+    <button class="${state.tab === "notes" ? "on" : ""}" onclick="state.tab='notes';renderRight()">Notes</button>
+    <button class="${state.tab === "start" ? "on" : ""}" onclick="state.tab='start';renderRight()">Opening message</button>
+    <button class="${state.tab === "tools" ? "on" : ""}" onclick="state.tab='tools';renderRight()">Tools &amp; setup</button>
+  </div>`;
+}
+
+function renderRight() {
+  if (!state.rows.length) return;
+  let html = tabs();
+  if (state.tab === "notes") html += renderNotes();
+  else if (state.tab === "start") html += section("h-obs", "Opening message (sent on every turn)", state.rows[0]?.observation);
+  else if (state.tab === "tools") html += renderTools();
+  else html += renderStep(state.rows.find(r => r.step === state.selected));
+  $("right").innerHTML = html;
+  for (const d of document.querySelectorAll("details.msg")) {
+    d.addEventListener("toggle", () => { if (d.open && !d.dataset.filled) fillMessage(d); }, {once: false});
+  }
+}
+
+function section(cls, title, body) {
+  return `<section><h2 class="${cls}">${title}</h2><pre>${esc(body)}</pre></section>`;
+}
+
+function renderStep(row) {
+  if (!row) return `<div class="empty">Pick a step on the left.</div>`;
+  let html = `<div class="muted" style="margin-bottom:10px">Turn ${row.step} · ${esc(clockOf(row))} ${badges(row)}</div>`;
+  if (row.reasoning) html += section("h-reason", "Reasoning", row.reasoning.trim());
+  if (row.text) html += section("h-said", "Said", row.text.trim());
+  if (!row.actions.length) html += section("h-call", "Action", "(no tool call: the model was nudged to act)");
+  row.actions.forEach((a, i) => {
+    const label = a.auto ? "Automatic: the rest of the turn passes"
+      : `Action ${i + 1}: ${fmtCall(a.call)}` + (a.recovered ? " (parsed from the model's text)" : "") + (a.ran ? "" : " (skipped)");
+    html += section(a.auto ? "h-ctx" : "h-call", esc(label), a.observation || "");
+  });
+  html += renderContext(row.step);
+  return html;
+}
+
+function renderContext(step) {
+  if (!state.contexts) {
+    return `<section><h2 class="h-ctx">Context sent to the model</h2>
+      <pre class="muted">This run was made before contexts were saved. Runs started from 2026-10-02 include it.</pre></section>`;
+  }
+  const messages = state.contexts[step];
+  if (!messages) return `<section><h2 class="h-ctx">Context sent to the model</h2><pre class="muted">Not saved for this step.</pre></section>`;
+  const chars = messages.reduce((n, m) => n + JSON.stringify(m).length, 0);
+  const items = messages.map((m, i) => {
+    const callText = m.tool_calls ? "calls " + m.tool_calls.map(c => `${c.function.name}(${c.function.arguments})`).join("; ") : "";
+    const firstLine = (cacheMarked(m.content) ? "[cache mark] " : "") + textOf(m.content).split("\n")[0];
+    const preview = [callText, firstLine].filter(Boolean).join("  ·  ");
+    return `<details class="msg" data-step="${step}" data-i="${i}">
+      <summary><span class="role r-${m.role}">[${i}] ${m.role}</span> ${esc(preview.slice(0, 140))}</summary></details>`;
+  }).join("");
+  return `<section><h2 class="h-ctx">Context sent to the model for this step · ${messages.length} messages · ${chars.toLocaleString()} characters</h2>
+    <div class="muted" style="padding:6px 10px">Click a message to expand it. The last message is the most recent thing the model saw.</div>
+    ${items}</section>`;
+}
+
+// Message content is a string, or (when marked for prompt caching) a list of text parts.
+function textOf(content) {
+  if (Array.isArray(content)) return content.map(p => p.text || "").join("");
+  return content || "";
+}
+function cacheMarked(content) {
+  return Array.isArray(content) && content.some(p => p.cache_control);
+}
+
+function fillMessage(d) {
+  const m = state.contexts[Number(d.dataset.step)][Number(d.dataset.i)];
+  let body = (cacheMarked(m.content) ? "[cache mark: the provider may reuse everything up to here]\n\n" : "") + textOf(m.content);
+  if (m.tool_calls) body += (body ? "\n\n" : "") + m.tool_calls.map(c => `→ ${c.function.name}(${c.function.arguments})`).join("\n");
+  d.insertAdjacentHTML("beforeend", `<pre>${esc(body)}</pre>`);
+  d.dataset.filled = "1";
+}
+
+function renderTools() {
+  const head = state.rows[0] || {};
+  if (!head.tools) return `<div class="empty">This run was made before the tool list was logged. Runs from 2026-10-03 include it.</div>`;
+  let html = section("h-sys", "System prompt (sent on every turn)", head.system || "");
+  html += section("h-ctx", "Settings", JSON.stringify(head.config || {}, null, 2));
+  html += `<section><h2 class="h-call">Tools available to the model · ${head.tools.length}</h2>` + head.tools.map(t => {
+    const f = t.function, props = f.parameters?.properties || {}, req = f.parameters?.required || [];
+    const params = Object.entries(props).map(([k, v]) =>
+      `    ${k}${req.includes(k) ? "" : " (optional)"}: ${v.enum ? v.enum.join(" | ") : v.type}${v.description ? " — " + v.description : ""}`).join("\n");
+    return `<div class="note"><div class="meta" style="color:var(--you)">${esc(f.name)}</div><pre style="margin:0;white-space:pre-wrap">${esc(f.description)}${params ? "\n" + esc(params) : ""}</pre></div>`;
+  }).join("") + `</section>`;
+  return html;
+}
+
+function renderNotes() {
+  const events = [];
+  for (const r of state.rows.filter(x => x.step > 0)) {
+    for (const a of own(r)) if (a.call.name === "write_note" || a.call.name === "read_notes") events.push({r, a});
+  }
+  if (!events.length) return `<div class="empty">The agent never wrote or read a note in this run.</div>`;
+  return `<section><h2 class="h-reason">Notes · ${events.length} events</h2>` + events.map(({r, a}) => {
+    const what = a.call.name === "write_note" ? "WROTE" : "READ";
+    const body = a.call.name === "write_note" ? a.call.arguments.text : (a.observation || "").split("\n").slice(1).join("\n");
+    return `<div class="note"><div class="meta">turn ${r.step} · ${esc(clockOf(r))} · ${what}
+      <a href="#" onclick="select(${r.step});return false;" style="color:var(--you)">open turn</a></div>
+      <pre style="margin:0;white-space:pre-wrap">${esc(body)}</pre></div>`;
+  }).join("") + `</section>`;
+}
+
+// ── keyboard ──────────────────────────────────────────────────────────────
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const visible = [...document.querySelectorAll(".step")].map(el => Number(el.dataset.step));
+  const i = visible.indexOf(state.selected);
+  if ((e.key === "ArrowDown" || e.key === "j") && i < visible.length - 1) { e.preventDefault(); select(visible[i + 1]); }
+  if ((e.key === "ArrowUp" || e.key === "k") && i > 0) { e.preventDefault(); select(visible[i - 1]); }
+});
+</script>
+</body>
+</html>

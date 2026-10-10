@@ -1,0 +1,339 @@
+# The kitten's needs. Each one is a meter (see sim.py): a number that changes at a steady rate
+# between events, like a Tamagotchi bar.
+#
+#   hunger           0 = stomach full, 1 = stomach empty. Once it's empty, energy_debt starts to grow.
+#   energy_debt      days of energy need the kitten has gone without (rules.toml [fasting]: weak 0.75, dies 2.75)
+#   dehydration_pct  water deficit as % of body weight (rules.toml [dehydration]: signs 5, dies 14)
+#   bladder, bowel   0 = empty, 1 = has to go now
+#   sleepiness, boredom, stress, trust   0 to 1
+#
+# The body meters (hunger, energy_debt, dehydration_pct, bladder) change at rates taken from
+# rules.toml; cat.py computes them. Everything in THIS file is behavior tuning with no vet source,
+# to be calibrated so the kitten's day matches real cat data (DESIGN.md §1.2, patterns P5-P7).
+status = "assumption"
+
+# How each meter changes per minute when nothing in particular is happening.
+[base_rates]
+sleepiness = 0.00556        # 0 -> 1 after 3 h awake
+boredom = 0.00333           # 0 -> 1 after 5 h with nothing to do
+stress = -0.0004            # stress fades by itself (0.7 -> 0 in about 1.2 days)
+trust_with_owner = 0.0003   # gained per minute in the same room as the owner, while not hiding
+
+# Extra stress per minute while each stressor lasts.
+[stressors]
+dirty_litter_box = 0.0006   # the box is dirtier than the kitten tolerates
+starving = 0.0008           # the kitten has an energy debt
+pain = 0.0012               # multiplied by the illness's pain level (0-1)
+rival_near = 0.0015         # an awake rival kitten is in the same room
+
+# Response curves: how urgent a need feels at each level. Points are [level, urgency], joined by
+# straight lines; urgency is 0 below the first point and 1 above the last.
+[urgency]
+hunger = [[0.4, 0.0], [1.0, 1.0]]
+dehydration_pct = [[0.5, 0.0], [3.0, 1.0]]
+bladder = [[0.7, 0.0], [1.0, 1.0]]
+bowel = [[0.7, 0.0], [1.0, 1.0]]
+sleepiness = [[0.3, 0.0], [1.0, 1.0]]
+boredom = [[0.2, 0.0], [1.0, 1.0]]
+stress = [[0.3, 0.0], [1.0, 1.0]]
+
+[choice]
+jitter = [0.75, 1.25]           # each option's score is multiplied by a random factor in this range
+distance_halving_tiles = 30     # an option this many tiles away scores half as much as one right here
+
+[movement]
+walk_minutes_per_tile = 0.02    # about 1 second per tile
+
+
+# Everything the kitten can do.
+#
+# When the kitten finishes an activity, it looks at every interaction below on every target it can reach,
+# scores each one, and does the best (cat.py: Cat.choose). Adding a behavior = adding an entry here.
+#
+# Fields
+#   name         what the kitten does
+#   target       an object kind from apartment.toml, or one of:
+#                  "self"   right where the kitten is        "owner"  the owner (must be home, awake, reachable)
+#                  "room"   a random room the kitten can reach   "floor"  a spot on the floor away from the kitchen
+#                  "cat"    another kitten it can reach (not hiding)
+#   minutes      [shortest, longest] duration, picked at random
+#   effects      change per minute to the kitten's needs during the activity, added to the normal rates (kitten.toml)
+#   special      a built-in mechanic whose result depends on the object (cat.py: SPECIAL_RELIEF, SPECIAL_FINISH):
+#                  eat, drink, litter_box, soil_floor, beg, investigate_flowers,
+#                  social_play, groom_kitten, sleep_with_kitten, hiss
+#   requires     conditions that must all hold (cat.py: REQUIREMENTS)
+#   base         a flat score, so low-key activities can win when nothing is urgent
+#   multipliers  named factors from the kitten's personality or situation (cat.py: MULTIPLIERS)
+#   hidden       the owner can't see the kitten during the activity
+#   sound        [kind, loudness] made as the activity starts (0 quiet, 1 normal, 2 loud, 3 very loud; sim.py)
+#   animation    what the game viewer plays
+#   description  what the owner sees if they're in the room ({name} = the kitten's name, {partner} = the other
+#                kitten for "cat" targets)
+#   seen         past tense for "What you saw <name> do" summaries
+#
+# How the score works (cat.py: Cat.score): for each need this interaction would reduce, take how urgent
+# that need is (kitten.toml [urgency]) times how much of it would be relieved; add them up, add `base`,
+# then multiply by each multiplier, a distance discount, and a little randomness.
+
+# ── body needs ───────────────────────────────────────────────────────────
+
+[[interaction]]
+name = "eat"
+target = "food_bowl"
+minutes = [3, 10]            # longest meal; the kitten stops earlier when full or the bowl is empty
+special = "eat"
+requires = ["bowl_has_food", "hungry"]
+multipliers = ["not_guarded"]          # a rival kitten sitting near the bowl puts the kitten off
+sound = ["crunching", 0]
+animation = "eat"
+description = "{name} is eating from the food bowl"
+seen = "ate"
+
+[[interaction]]
+name = "drink"
+target = "water_bowl"
+minutes = [1, 4]
+special = "drink"
+requires = ["bowl_has_water", "thirsty"]
+multipliers = ["not_guarded"]
+animation = "drink"
+description = "{name} is drinking water"
+seen = "drank"
+
+[[interaction]]
+name = "use_litter_box"
+target = "litter_box"
+minutes = [2, 4]
+special = "litter_box"
+requires = ["needs_toilet"]
+multipliers = ["litter_cleanliness", "not_guarded"]   # a dirty box, or a rival next to it, puts the kitten off
+sound = ["litter_scratching", 0]
+animation = "dig"
+description = "{name} is using the litter box"
+seen = "used the litter box"
+
+[[interaction]]
+name = "soil_floor"
+target = "floor"
+minutes = [2, 3]
+special = "soil_floor"
+requires = ["needs_toilet"]
+multipliers = ["litter_unacceptable"]  # only wins when the box is too dirty or out of reach
+animation = "squat"
+description = "{name} is squatting in the corner"
+seen = "squatted in the corner"
+
+[[interaction]]
+name = "beg"
+target = "owner"
+minutes = [4, 8]
+special = "beg"
+requires = ["hungry", "no_food_reachable", "not_lethargic"]
+sound = ["crying", 2]
+animation = "cry"
+description = "{name} is crying loudly at you"
+seen = "cried at you"
+
+# ── rest ─────────────────────────────────────────────────────────────────
+
+[[interaction]]
+name = "sleep_on_bed"
+target = "bed"
+minutes = [40, 120]
+effects = { sleepiness = -0.0074, boredom = -0.00333 }  # sleeping pays back sleepiness and stops boredom
+multipliers = ["trust"]                                 # the kitten sleeps on the owner's bed once it trusts them
+animation = "sleep"
+description = "{name} is asleep, curled up on the bed"
+seen = "fell asleep on the bed"
+
+[[interaction]]
+name = "sleep_on_couch"
+target = "couch"
+minutes = [40, 120]
+effects = { sleepiness = -0.0074, boredom = -0.00333 }
+animation = "sleep"
+description = "{name} is asleep, curled up on the couch"
+seen = "fell asleep on the couch"
+
+[[interaction]]
+name = "sleep_on_windowsill"
+target = "window"
+minutes = [30, 90]
+effects = { sleepiness = -0.0074, boredom = -0.00333 }
+animation = "sleep"
+description = "{name} is asleep on the windowsill"
+seen = "fell asleep on the windowsill"
+
+[[interaction]]
+name = "rest"
+target = "self"
+minutes = [20, 40]
+effects = { sleepiness = -0.003 }
+base = 0.06
+multipliers = ["unwell"]            # a sick kitten mostly lies still
+animation = "lie"
+description = "{name} is lying down, awake"
+description_unwell = "{name} is lying hunched and very still"
+seen = "lay down"
+
+[[interaction]]
+name = "groom"
+target = "self"
+minutes = [8, 15]
+effects = { stress = -0.001 }
+base = 0.05
+animation = "groom"
+description = "{name} is grooming"
+seen = "groomed"
+
+[[interaction]]
+name = "hide"
+target = "hiding_spot"
+minutes = [30, 90]
+effects = { stress = -0.004 }
+multipliers = ["timid", "unwell"]   # shy or sick kittens hide more
+hidden = true
+animation = "crouch"
+description = "{name} is hiding {spot}"
+seen = "hid"
+
+# ── fun ──────────────────────────────────────────────────────────────────
+
+[[interaction]]
+name = "play_with_toy"
+target = "toy"
+minutes = [5, 15]
+effects = { boredom = -0.03, sleepiness = 0.003 }
+base = 0.15                          # kittens play even when not very bored (play peaks at 7-14 weeks)
+requires = ["not_lethargic"]
+multipliers = ["playful"]
+sound = ["thumping", 1]
+animation = "pounce"
+description = "{name} is pouncing on the {object}"
+seen = "played"
+
+[[interaction]]
+name = "watch_birds"
+target = "window"
+minutes = [10, 30]
+effects = { boredom = -0.01 }
+requires = ["not_lethargic"]
+animation = "sit_alert"
+description = "{name} is on the windowsill, watching birds"
+seen = "watched birds"
+
+[[interaction]]
+name = "explore"
+target = "room"
+minutes = [5, 15]
+effects = { boredom = -0.008 }
+base = 0.05
+requires = ["not_lethargic"]
+multipliers = ["curious"]
+animation = "sniff"
+description = "{name} is sniffing around"
+seen = "sniffed around"
+
+[[interaction]]
+name = "ask_for_attention"
+target = "owner"
+minutes = [5, 10]
+effects = { boredom = -0.015, stress = -0.002 }
+requires = ["not_lethargic"]
+multipliers = ["sociable", "trust"]
+sound = ["meowing", 1]
+animation = "rub_legs"
+description = "{name} is rubbing against your legs and meowing"
+seen = "came over to you"
+
+# ── hazards ──────────────────────────────────────────────────────────────
+
+[[interaction]]
+name = "investigate_flowers"
+target = "vase"
+minutes = [1, 3]
+effects = { boredom = -0.02 }
+special = "investigate_flowers"      # each visit may expose the kitten to lily pollen or leaves (rules.toml [lily])
+base = 0.3
+requires = ["not_lethargic"]
+multipliers = ["curious", "novelty"] # new things draw kittens in; the pull fades as the vase becomes familiar
+animation = "sniff"
+description = "{name} is sniffing and pawing at the flowers in the vase"
+seen = "sniffed at the flowers"
+
+# ── other kittens (only with several kittens) ────────────────────────────
+
+[[interaction]]
+name = "play_with_kitten"
+target = "cat"
+minutes = [5, 15]
+effects = { boredom = -0.03, sleepiness = 0.003 }
+special = "social_play"              # the other kitten joins in; the bond grows, or the play turns into a fight
+base = 0.2                           # social play peaks at 6-14 weeks (rules.toml [social])
+requires = ["not_lethargic", "partner_playful"]
+multipliers = ["playful", "friendly"]
+sound = ["thumping", 1]
+animation = "wrestle"
+description = "{name} and {partner} are wrestling and chasing each other"
+seen = "wrestled with {partner}"
+
+[[interaction]]
+name = "groom_kitten"
+target = "cat"
+minutes = [3, 10]
+effects = { stress = -0.002 }
+special = "groom_kitten"
+base = 0.12
+requires = ["partner_resting"]
+multipliers = ["sociable", "friendly"]
+animation = "allogroom"
+description = "{name} is licking {partner}'s head and ears"
+seen = "groomed {partner}"
+
+[[interaction]]
+name = "sleep_with_kitten"
+target = "cat"
+minutes = [40, 120]
+effects = { sleepiness = -0.0074, boredom = -0.00333 }
+special = "sleep_with_kitten"
+base = 0.03
+requires = ["partner_sleeping"]
+multipliers = ["friendly"]
+animation = "sleep"
+description = "{name} is asleep, curled up against {partner}"
+seen = "curled up with {partner}"
+
+[[interaction]]
+name = "hiss_at_kitten"
+target = "cat"
+minutes = [1, 2]
+special = "hiss"                     # may turn into a fight
+base = 0.15
+requires = ["partner_rival"]
+multipliers = ["bold", "hostility", "cooled_down"]   # hostile kittens mostly avoid each other between run-ins
+sound = ["hissing", 1]
+animation = "hiss"
+description = "{name} is hissing at {partner}, fur standing on end"
+seen = "hissed at {partner}"
+
+[[interaction]]
+name = "guard_food"
+target = "food_bowl"
+minutes = [20, 40]
+base = 0.15
+requires = ["has_rival", "not_lethargic"]
+multipliers = ["bold", "rivalry"]
+animation = "sit_alert"
+description = "{name} is sitting next to the food bowl, watching the doorway"
+seen = "sat by the food bowl"
+
+[[interaction]]
+name = "guard_litter_box"
+target = "litter_box"
+minutes = [15, 30]
+base = 0.08
+requires = ["has_rival", "not_lethargic"]
+multipliers = ["bold", "rivalry"]
+animation = "sit_alert"
+description = "{name} is sitting next to the litter box, watching the doorway"
+seen = "sat by the litter box"

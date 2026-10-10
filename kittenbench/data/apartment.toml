@@ -1,0 +1,103 @@
+# The apartment: what the letters in apartment.txt mean, and where each object starts.
+#
+# Map legend (apartment.txt, one character per tile, row 0 at the top):
+#   #  wall
+#   D  a door that can be closed (closed doors stop the kitten, not the owner)
+#   d  an open doorway
+#   letters: floor belonging to a room (see [rooms])
+# Doors and doorways count as part of the hallway.
+
+[rooms]
+B = "bedroom"
+T = "bathroom"
+K = "kitchen"
+H = "hallway"
+L = "living_room"
+
+# Objects. `tile` is [row, column] in apartment.txt. `props` is the object's starting state.
+# Kinds the kitten can interact with are listed in kitten.toml.
+
+[[object]]
+id = "food_bowl"
+kind = "food_bowl"
+tile = [3, 23]
+props = { kibble_g = 0.0, wet_g = 0.0, wet_added_t = -1, warm_until = -1 }
+
+[[object]]
+id = "water_bowl"
+kind = "water_bowl"
+tile = [3, 24]
+props = { ml = 0.0 }
+
+[[object]]
+id = "litter_box"
+kind = "litter_box"
+tile = [2, 14]
+props = { urine = 0, feces = 0, big_clumps = 0, residue = 0.0 }
+
+[[object]]
+id = "bedroom_door"
+kind = "door"
+tile = [5, 5]
+props = { open = true, room = "bedroom" }
+
+[[object]]
+id = "bathroom_door"
+kind = "door"
+tile = [5, 13]
+props = { open = true, room = "bathroom" }
+
+[[object]]
+id = "bed"
+kind = "bed"
+tile = [2, 3]
+
+[[object]]
+id = "under_bed"
+kind = "hiding_spot"
+tile = [2, 3]
+props = { where = "under the bed" }
+
+[[object]]
+id = "couch"
+kind = "couch"
+tile = [10, 4]
+
+[[object]]
+id = "under_couch"
+kind = "hiding_spot"
+tile = [10, 4]
+props = { where = "under the couch" }
+
+[[object]]
+id = "window"
+kind = "window"
+tile = [1, 20]
+
+[[object]]
+id = "toy_mouse"
+kind = "toy"
+tile = [11, 12]
+props = { name = "toy mouse" }
+
+[[object]]
+id = "bath_towel"
+kind = "towel"
+tile = [1, 11]
+props = { name = "bath towel", scent_of = -1, scented_t = -1 }
+
+[[object]]
+id = "hand_towel"
+kind = "towel"
+tile = [1, 12]
+props = { name = "hand towel", scent_of = -1, scented_t = -1 }
+
+[[object]]
+id = "carrier"
+kind = "carrier"
+tile = [7, 2]
+
+# Where things appear later.
+[spawn]
+vase = [9, 15]        # the neighbor puts the bouquet on the living room coffee table
+delivery = [6, 1]     # packages arrive by the front door
